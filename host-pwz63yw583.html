@@ -60,6 +60,17 @@ li button{padding:6px 10px;font-size:14px}
 
 <script src="peerjs.min.js"></script>
 <script>
+
+// Ask the browser for stereo, high-bitrate Opus (music mode) instead of voice-call settings
+function musicSdp(sdp){
+  const m = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/);
+  if (!m) return sdp;
+  const re = new RegExp('a=fmtp:' + m[1] + ' ([^\\r\\n]*)');
+  return sdp.replace(re, (_, p) => 'a=fmtp:' + m[1] + ' ' + p.split(';')
+    .filter(x => !/^(stereo|sprop-stereo|maxaveragebitrate|usedtx|cbr)=/.test(x))
+    .concat(['stereo=1', 'sprop-stereo=1', 'maxaveragebitrate=192000', 'usedtx=0', 'cbr=0']).join(';'));
+}
+
 const MAX = 8;
 const $ = id => document.getElementById(id);
 const letters = 'abcdefghjkmnpqrstuvwxyz23456789';
@@ -124,7 +135,9 @@ function approve(id){
   if (approvedCount() >= MAX) return alert('The limit of ' + MAX + ' listeners is full.');
   l.ok = true;
   l.conn.send({ t: 'ok' });
-  l.call = peer.call(id, audioStream);
+  l.call = peer.call(id, audioStream, { sdpTransform: musicSdp });
+  setTimeout(() => { try { for (const s of l.call.peerConnection.getSenders()) {
+    const p = s.getParameters(); if (p.encodings && p.encodings[0]) { p.encodings[0].maxBitrate = 192000; s.setParameters(p); } } } catch(e){} }, 1500);
   render();
 }
 function kick(id){
@@ -153,6 +166,7 @@ async function start(){
   const v = shared.getVideoTracks()[0];
   if (v){ v.applyConstraints({ frameRate: 1, width: 320, height: 180 }).catch(() => {}); v.onended = stop; }
   track.onended = stop;
+  try { track.contentHint = 'music'; } catch(e){}
   audioStream = new MediaStream([track]);
 
   peer = new Peer('pr-' + sid);

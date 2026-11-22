@@ -66,6 +66,17 @@ input[type=range]{flex:1;accent-color:var(--acc)}
 
 <script src="peerjs.min.js"></script>
 <script>
+
+// Ask the browser for stereo, high-bitrate Opus (music mode) instead of voice-call settings
+function musicSdp(sdp){
+  const m = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/);
+  if (!m) return sdp;
+  const re = new RegExp('a=fmtp:' + m[1] + ' ([^\\r\\n]*)');
+  return sdp.replace(re, (_, p) => 'a=fmtp:' + m[1] + ' ' + p.split(';')
+    .filter(x => !/^(stereo|sprop-stereo|maxaveragebitrate|usedtx|cbr)=/.test(x))
+    .concat(['stereo=1', 'sprop-stereo=1', 'maxaveragebitrate=192000', 'usedtx=0', 'cbr=0']).join(';'));
+}
+
 const $ = id => document.getElementById(id);
 const code = location.hash.slice(1);
 const audio = $('audio');
@@ -101,7 +112,7 @@ function connect(){
   });
   peer.on('call', call => {
     if (call.peer !== 'pr-' + code){ call.close(); return; } // only the host may send audio
-    call.answer();
+    call.answer(undefined, { sdpTransform: musicSdp });
     call.on('stream', s => {
       audio.srcObject = s;
       show('live');
