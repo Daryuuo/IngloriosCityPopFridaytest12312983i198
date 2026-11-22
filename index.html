@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://0.peerjs.com wss://0.peerjs.com; media-src blob: mediastream:; base-uri 'none'; form-action 'none'">
+<title>Private Radio</title>
+<style>
+:root{--bg:#1d1626;--card:#2a2036;--line:#3d3050;--text:#f3ecf7;--dim:#a99bb8;--acc:#ffb84d;--red:#ff6b6b}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:16px;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,sans-serif}
+main{width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px 24px}
+h1{font:600 26px/1.2 Georgia,serif;margin:0 0 6px}
+p{margin:0 0 16px;color:var(--dim)}
+input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit;margin-bottom:12px}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:12px 16px;background:var(--acc);color:#2a1a00;font-weight:600;width:100%}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.live{display:inline-block;font-size:13px;padding:2px 10px;border-radius:99px;background:rgba(255,107,107,.15);color:var(--red);margin-bottom:12px}
+.row{display:flex;align-items:center;gap:12px}
+.round{width:52px;height:52px;border-radius:50%;padding:0;flex:none;font-size:20px}
+input[type=range]{flex:1;accent-color:var(--acc)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <section id="bad" hidden>
+    <h1>Link not complete</h1>
+    <p>This link is missing its station code. Ask the host to send it again.</p>
+  </section>
+
+  <section id="join">
+    <h1>Friday night radio</h1>
+    <p>A private station. Enter your name so the host knows who’s joining.</p>
+    <input type="text" id="name" placeholder="Your name" maxlength="30" aria-label="Your name">
+    <button id="ask">Ask to join</button>
+  </section>
+
+  <section id="wait" hidden>
+    <h1>Waiting for the host</h1>
+    <p>You’ll hear the music as soon as you’re let in. Keep this page open.</p>
+  </section>
+
+  <section id="off" hidden>
+    <h1>Off the air</h1>
+    <p>The station isn’t broadcasting right now. Keep this page open. It reconnects when the host goes live.</p>
+  </section>
+
+  <section id="kicked" hidden>
+    <h1>Removed</h1>
+    <p>The host ended your session.</p>
+  </section>
+
+  <section id="live" hidden>
+    <span class="live">Live</span>
+    <h1>Friday night radio</h1>
+    <p id="tapmsg" hidden>Your browser paused playback. Press play to listen.</p>
+    <div class="row">
+      <button class="round" id="pp" aria-label="Pause">&#10074;&#10074;</button>
+      <input type="range" id="vol" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
+    </div>
+  </section>
+</main>
+<audio id="audio" autoplay playsinline></audio>
+
+<script src="peerjs.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const code = location.hash.slice(1);
+const audio = $('audio');
+let peer, conn, name, timer, stopped = false;
+
+function show(id){
+  for (const s of document.querySelectorAll('section')) s.hidden = s.id !== id;
+}
+const validCode = /^[a-z2-9]{14}$/.test(code);
+if (!validCode) show('bad');
+
+function cleanup(){
+  clearTimeout(timer);
+  try { peer && peer.destroy(); } catch(e){}
+  peer = conn = null;
+}
+function offline(){
+  if (stopped) return;
+  cleanup();
+  show('off');
+  timer = setTimeout(connect, 5000);
+}
+function connect(){
+  cleanup();
+  show('wait');
+  peer = new Peer();
+  peer.on('open', () => {
+    conn = peer.connect('pr-' + code, { metadata: { name } });
+    conn.on('data', d => {
+      if (d && d.t === 'kick'){ stopped = true; cleanup(); show('kicked'); }
+    });
+    conn.on('close', offline);
+  });
+  peer.on('call', call => {
+    if (call.peer !== 'pr-' + code){ call.close(); return; } // only the host may send audio
+    call.answer();
+    call.on('stream', s => {
+      audio.srcObject = s;
+      show('live');
+      audio.play().then(() => $('tapmsg').hidden = true).catch(() => {
+        $('tapmsg').hidden = false;
+        $('pp').innerHTML = '&#9654;';
+      });
+    });
+    call.on('close', offline);
+  });
+  peer.on('error', offline);
+}
+
+$('ask').onclick = () => {
+  if (!validCode) return;
+  name = $('name').value.trim() || 'Guest';
+  stopped = false;
+  connect();
+};
+$('pp').onclick = () => {
+  if (audio.paused){ audio.play(); $('pp').innerHTML = '&#10074;&#10074;'; $('tapmsg').hidden = true; }
+  else { audio.pause(); $('pp').innerHTML = '&#9654;'; }
+};
+$('vol').oninput = e => audio.volume = e.target.value;
+audio.volume = 0.8;
+</script>
+</body>
+</html>

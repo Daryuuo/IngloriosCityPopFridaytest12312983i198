@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://0.peerjs.com wss://0.peerjs.com; media-src blob: mediastream:; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex">
+<title>Private Radio: Host</title>
+<style>
+:root{--bg:#1d1626;--card:#2a2036;--line:#3d3050;--text:#f3ecf7;--dim:#a99bb8;--acc:#ffb84d;--red:#ff6b6b;--green:#6ee7a8}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:16px;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,sans-serif}
+main{width:100%;max-width:460px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px 24px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+h1{font:600 24px/1.2 Georgia,serif;margin:0}
+h2{font:600 16px/1.2 system-ui,sans-serif;margin:24px 0 8px}
+.badge{font-size:13px;padding:2px 10px;border-radius:99px;background:var(--line);color:var(--dim)}
+.badge.on{background:rgba(110,231,168,.15);color:var(--green)}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:10px 14px;background:var(--acc);color:#2a1a00;font-weight:600}
+button.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
+button.big{width:100%;padding:14px}
+button.stop{background:var(--red);color:#2b0000}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.hint{font-size:14px;color:var(--dim);margin:12px 0 20px}
+label{display:block;font-size:14px;color:var(--dim);margin-bottom:4px}
+.row{display:flex;gap:8px;margin-bottom:8px}
+input[type=text]{flex:1;min-width:0;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:13px ui-monospace,monospace}
+.check{display:flex;align-items:center;gap:8px;color:var(--text);font-size:15px;margin-top:12px}
+ul{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:10px}
+li{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line)}
+li:last-child{border-bottom:0}
+li.empty{color:var(--dim);font-size:14px}
+li small{color:var(--dim)}
+li .btns{display:flex;gap:6px}
+li button{padding:6px 10px;font-size:14px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Broadcast control</h1>
+    <span class="badge" id="badge">Offline</span>
+  </header>
+
+  <button class="big" id="go">Start broadcast</button>
+  <p class="hint">In the share window, choose <b>Entire Screen</b> and tick <b>Also share system audio</b>. Only the audio is sent, never your screen. Everything your PC plays is shared, so turn on Do Not Disturb first.</p>
+
+  <label for="link">Listener link</label>
+  <div class="row">
+    <input type="text" id="link" readonly>
+    <button id="copy">Copy</button>
+  </div>
+  <button class="ghost" id="newlink">Make a new link</button>
+
+  <label class="check"><input type="checkbox" id="auto"> Let people in without asking</label>
+
+  <h2>Listeners <span id="count" style="color:var(--dim);font-weight:400"></span></h2>
+  <ul id="list"><li class="empty">No one yet.</li></ul>
+</main>
+
+<script src="peerjs.min.js"></script>
+<script>
+const MAX = 8;
+const $ = id => document.getElementById(id);
+const letters = 'abcdefghjkmnpqrstuvwxyz23456789';
+const rnd = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => letters[b % letters.length]).join('');
+
+let sid;
+try { sid = localStorage.getItem('radio-code'); } catch(e){}
+function setLink(){ $('link').value = new URL('./', location.href).href + '#' + sid; }
+function newCode(){
+  sid = rnd(14);
+  try { localStorage.setItem('radio-code', sid); } catch(e){}
+  setLink();
+}
+sid ? setLink() : newCode();
+
+$('copy').onclick = () => {
+  navigator.clipboard.writeText($('link').value);
+  $('copy').textContent = 'Copied';
+  setTimeout(() => $('copy').textContent = 'Copy', 1500);
+};
+$('newlink').onclick = () => {
+  if (live) return alert('Stop the broadcast before making a new link.');
+  newCode();
+};
+
+let peer, shared, audioStream, live = false;
+const listeners = new Map(); // peer id -> {conn, call, name, ok}
+
+const approvedCount = () => [...listeners.values()].filter(l => l.ok).length;
+
+function render(){
+  const ul = $('list');
+  ul.innerHTML = '';
+  $('count').textContent = live ? '(' + approvedCount() + ' of ' + MAX + ')' : '';
+  if (!listeners.size){ ul.innerHTML = '<li class="empty">No one yet.</li>'; return; }
+  for (const [id, l] of listeners){
+    const li = document.createElement('li');
+    const who = document.createElement('span');
+    who.textContent = l.name + (l.ok ? '' : ' wants to join');
+    li.append(who);
+    const btns = document.createElement('div');
+    btns.className = 'btns';
+    if (!l.ok){
+      const a = document.createElement('button');
+      a.textContent = 'Let in';
+      a.onclick = () => approve(id);
+      btns.append(a);
+    }
+    const k = document.createElement('button');
+    k.className = 'ghost';
+    k.textContent = l.ok ? 'Remove' : 'Decline';
+    k.onclick = () => kick(id);
+    btns.append(k);
+    li.append(btns);
+    ul.append(li);
+  }
+}
+
+function approve(id){
+  const l = listeners.get(id);
+  if (!l || l.ok) return;
+  if (approvedCount() >= MAX) return alert('The limit of ' + MAX + ' listeners is full.');
+  l.ok = true;
+  l.conn.send({ t: 'ok' });
+  l.call = peer.call(id, audioStream);
+  render();
+}
+function kick(id){
+  const l = listeners.get(id);
+  if (!l) return;
+  try { l.conn.send({ t: 'kick' }); } catch(e){}
+  setTimeout(() => { try { l.call && l.call.close(); l.conn.close(); } catch(e){} }, 300);
+  listeners.delete(id);
+  render();
+}
+
+async function start(){
+  try {
+    shared = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: { systemAudio: 'include', echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+  } catch(e){ return; }
+
+  const track = shared.getAudioTracks()[0];
+  if (!track){
+    shared.getTracks().forEach(t => t.stop());
+    return alert('No audio was shared. Try again, choose Entire Screen, and tick "Also share system audio". (System audio needs Chrome or Edge on Windows.)');
+  }
+  // keep the video track alive but tiny and never send it
+  const v = shared.getVideoTracks()[0];
+  if (v){ v.applyConstraints({ frameRate: 1, width: 320, height: 180 }).catch(() => {}); v.onended = stop; }
+  track.onended = stop;
+  audioStream = new MediaStream([track]);
+
+  peer = new Peer('pr-' + sid);
+  peer.on('open', () => { live = true; ui(); });
+  peer.on('disconnected', () => { try { peer.reconnect(); } catch(e){} });
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id') alert('This link is already live in another tab. Close that tab or make a new link.');
+    else if (e.type !== 'peer-unavailable') alert('Connection problem: ' + e.type);
+    if (!live) stop();
+  });
+  peer.on('connection', conn => {
+    const pending = [...listeners.values()].filter(l => !l.ok).length;
+    if (pending >= 10 || listeners.size >= 25){ conn.on('open', () => conn.close()); return; } // flood protection
+    const name = String((conn.metadata && conn.metadata.name) || 'Guest').slice(0, 30);
+    listeners.set(conn.peer, { conn, name, ok: false });
+    conn.on('close', () => { listeners.delete(conn.peer); render(); });
+    conn.on('open', () => {
+      render();
+      if ($('auto').checked) approve(conn.peer);
+    });
+  });
+}
+
+function stop(){
+  listeners.clear();
+  try { peer && peer.destroy(); } catch(e){}
+  if (shared) shared.getTracks().forEach(t => { t.onended = null; t.stop(); });
+  peer = shared = audioStream = null;
+  live = false;
+  ui();
+}
+
+function ui(){
+  $('badge').textContent = live ? 'On air' : 'Offline';
+  $('badge').className = 'badge' + (live ? ' on' : '');
+  $('go').textContent = live ? 'Stop broadcast' : 'Start broadcast';
+  $('go').className = 'big' + (live ? ' stop' : '');
+  render();
+}
+$('go').onclick = () => live ? stop() : start();
+ui();
+</script>
+</body>
+</html>
